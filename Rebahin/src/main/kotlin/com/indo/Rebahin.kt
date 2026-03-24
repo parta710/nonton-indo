@@ -6,7 +6,7 @@ import com.lagradost.cloudstream3.utils.loadExtractor
 
 class Rebahin : MainAPI() {
     // URL asli Rebahin adalah IP langsung
-    override var mainUrl = "http://165.245.188.180"
+    override var mainUrl = "http://139.59.78.154"
     override var name = "Rebahin"
     override val hasMainPage = true
     override var lang = "id"
