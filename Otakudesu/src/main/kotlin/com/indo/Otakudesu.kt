@@ -6,7 +6,6 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addMalId
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
-import com.lagradost.cloudstream3.utils.newExtractorLink
 
 class Otakudesu : MainAPI() {
     override var mainUrl = "https://otakudesu.blog"
@@ -102,10 +101,16 @@ class Otakudesu : MainAPI() {
         }
     }
 
+    private suspend fun resolveDesuLink(url: String): String? {
+        return try {
+            val resp = app.get(url, headers = ua, allowRedirects = false)
+            resp.headers["location"]?.ifBlank { null }
+        } catch (e: Exception) { null }
+    }
+
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
         val document = app.get(data, headers = ua).document
 
-        // Download links - only KrakenFiles and PixelDrain for now
         document.select("div.download li").forEach { li ->
             val qualityText = li.selectFirst("strong")?.text() ?: ""
             val quality = when {
@@ -119,35 +124,12 @@ class Otakudesu : MainAPI() {
 
             li.select("a[href]").forEach { a ->
                 val href = a.attr("href").ifBlank { null } ?: return@forEach
-                val serverName = a.text().trim().ifBlank { "Download" }
 
-                when {
-                    // Krakenfiles - extract video URL directly from page
-                    href.contains("krakenfiles.com") -> {
-                        try {
-                            val kfDoc = app.get(href).document
-                            val videoUrl = kfDoc.selectFirst("source[src*=krakencloud], source[type=video/mp4]")
-                                ?.attr("src")?.ifBlank { null }
-                            if (videoUrl != null) {
-                                callback(newExtractorLink("KrakenFiles", serverName, videoUrl) {
-                                    this.quality = quality
-                                    this.referer = href
-                                })
-                            }
-                        } catch (_: Exception) { }
-                    }
-                    // PixelDrain - use direct API download URL
-                    href.contains("pixeldrain.com") -> {
-                        val pdId = Regex("pixeldrain\\.com/u/(\\w+)").find(href)?.groupValues?.getOrNull(1)
-                        if (pdId != null) {
-                            callback(newExtractorLink("PixelDrain", serverName, "https://pixeldrain.com/api/file/$pdId") {
-                                this.quality = quality
-                                this.referer = href
-                            })
-                        }
-                    }
-                    // Skip other hosts for now (too slow)
-                }
+                val realUrl = if (href.contains("link.desustream.com")) {
+                    resolveDesuLink(href) ?: return@forEach
+                } else href
+
+                loadExtractor(fixUrl(realUrl), data, subtitleCallback, callback)
             }
         }
 
