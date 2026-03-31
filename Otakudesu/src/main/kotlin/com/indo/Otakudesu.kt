@@ -6,6 +6,7 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addMalId
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
+import com.lagradost.cloudstream3.utils.newExtractorLink
 
 class Otakudesu : MainAPI() {
     override var mainUrl = "https://otakudesu.blog"
@@ -124,12 +125,31 @@ class Otakudesu : MainAPI() {
 
             li.select("a[href]").forEach { a ->
                 val href = a.attr("href").ifBlank { null } ?: return@forEach
+                val serverName = a.text().trim().ifBlank { "Download" }
 
                 val realUrl = if (href.contains("link.desustream.com")) {
                     resolveDesuLink(href) ?: return@forEach
                 } else href
 
-                loadExtractor(fixUrl(realUrl), data, subtitleCallback, callback)
+                // Host yang butuh ekstractor khusus (embed player) → loadExtractor
+                // Host file langsung → newExtractorLink dengan quality
+                val isDirectFile = realUrl.contains("pixeldrain.com") ||
+                    realUrl.contains("krakenfiles.com") ||
+                    realUrl.contains("acefile.co") ||
+                    realUrl.contains("gofile.io") ||
+                    realUrl.contains("mega.nz") ||
+                    realUrl.contains(".mp4") ||
+                    realUrl.contains("odfiles") ||
+                    realUrl.contains("otakufiles")
+
+                if (isDirectFile) {
+                    callback(newExtractorLink(serverName, serverName, fixUrl(realUrl)) {
+                        this.quality = quality
+                        this.referer = data
+                    })
+                } else {
+                    loadExtractor(fixUrl(realUrl), data, subtitleCallback, callback)
+                }
             }
         }
 
