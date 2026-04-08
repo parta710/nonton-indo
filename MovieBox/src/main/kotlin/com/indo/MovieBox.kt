@@ -184,7 +184,6 @@ class MovieBox : MainAPI() {
                 newExtractorLink(name, name, raw) {
                     this.quality = q
                     this.referer = "$mainUrl/"
-                    this.isM3u8 = raw.contains(".m3u8", ignoreCase = true)
                 }
             )
         }
