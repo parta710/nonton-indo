@@ -1,164 +1,199 @@
 package com.indo
 
+import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterxml.jackson.module.kotlin.readValue
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 
 class MovieBox : MainAPI() {
     override var mainUrl = "https://themoviebox.org"
+    private val apiBase = "https://h5-api.aoneroom.com"
+
     override var name = "MovieBox"
     override val hasMainPage = true
     override var lang = "id"
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
 
+    // id dari user (Trending / New Release / Popular)
     override val mainPage = mainPageOf(
-        "$mainUrl/" to "Trending"
+        "872031290915189720" to "Trending🔥",
+        "4380734070238626200" to "K-Drama: New Release",
+        "6528093688173053896" to "Trending Anime"
     )
 
-    private fun extractNuxtData(html: String): String? {
-        val rgx = Regex("""<script[^>]*id=\"__NUXT_DATA__\"[^>]*>([\s\S]*?)</script>""")
-        return rgx.find(html)?.groupValues?.getOrNull(1)
+    private var clientToken: String? = null
+
+    private val baseHeaders: Map<String, String>
+        get() = mapOf(
+            "Accept" to "application/json",
+            "User-Agent" to USER_AGENT,
+            "X-Client-Info" to "{\"timezone\":\"Asia/Jakarta\"}"
+        ) + (clientToken?.let { mapOf("X-Client-Token" to it) } ?: emptyMap())
+
+    private fun updateTokenFromHeaders(headers: Map<String, String>) {
+        val xUser = headers.entries.firstOrNull { it.key.equals("x-user", true) }?.value ?: return
+        val token = tryParseJson<Map<String, Any>>(xUser)?.get("token")?.toString()
+        if (!token.isNullOrBlank()) clientToken = token
     }
 
-    private fun extractStrings(nuxtData: String): List<String> {
-        // Ambil string literal sederhana dari payload __NUXT_DATA__
-        val out = mutableListOf<String>()
-        Regex("\"([^\"\\n\\r]{2,})\"").findAll(nuxtData).forEach { m ->
-            out.add(m.groupValues[1])
-        }
-        return out
+    private suspend fun apiGet(path: String): String {
+        val res = app.get("$apiBase$path", headers = baseHeaders)
+        updateTokenFromHeaders(res.headers)
+        return res.text
+    }
+
+    private fun toTvType(subjectType: Int?): TvType = when (subjectType) {
+        2 -> TvType.Anime
+        3 -> TvType.TvSeries
+        else -> TvType.Movie
     }
 
     private fun detailPathFromUrl(url: String): String {
         return url.substringAfterLast("/").substringBefore("?")
     }
 
-    private fun titlePrefix(detailPath: String): String {
-        // one-piece-CTqWaizwOp3 -> one-piece
-        return detailPath.substringBeforeLast("-")
-    }
+    data class ApiEnvelope<T>(
+        val code: Int? = null,
+        val message: String? = null,
+        val data: T? = null
+    )
 
-    private fun parseCardTitle(rawTitle: String?, cardText: String?, detailPath: String): String {
-        val fromTitleAttr = rawTitle
-            ?.replace(Regex("^go to\\s+", RegexOption.IGNORE_CASE), "")
-            ?.replace(Regex("\\s+detail page$", RegexOption.IGNORE_CASE), "")
-            ?.trim()
-            ?.ifBlank { null }
+    data class CoverObj(
+        val url: String? = null
+    )
 
-        val fromCard = cardText?.trim()?.ifBlank { null }
+    data class SubjectObj(
+        val subjectId: String? = null,
+        val subjectType: Int? = null,
+        val title: String? = null,
+        val description: String? = null,
+        val releaseDate: String? = null,
+        val genre: String? = null,
+        val cover: CoverObj? = null,
+        val detailPath: String? = null
+    )
 
-        return fromCard
-            ?: fromTitleAttr
-            ?: detailPath.substringBeforeLast("-").replace('-', ' ')
-    }
+    data class SeasonObj(
+        val se: Int? = null,
+        val maxEp: Int? = null,
+        val allEp: String? = null
+    )
+
+    data class ResourceObj(
+        val seasons: List<SeasonObj>? = null
+    )
+
+    data class DetailData(
+        val subject: SubjectObj? = null,
+        val resource: ResourceObj? = null
+    )
+
+    data class RankingData(
+        @JsonProperty("subjectList")
+        val subjectList: List<SubjectObj>? = null
+    )
+
+    data class PlayItem(
+        val url: String? = null,
+        val resolutions: String? = null,
+        val format: String? = null
+    )
+
+    data class PlayData(
+        val hls: List<PlayItem>? = null,
+        val streams: List<PlayItem>? = null
+    )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(request.data).document
+        val rankingId = request.data
+        val raw = apiGet("/wefeed-h5api-bff/ranking-list/content?id=$rankingId&page=$page&perPage=12")
+        val parsed = AppUtils.mapper.readValue<ApiEnvelope<RankingData>>(raw)
 
-        val anchors = document
-            .select("a.movie-card[href*=/moviesDetail/]")
-            .ifEmpty { document.select("a[href*=/moviesDetail/]") }
-
-        val items = anchors.mapNotNull { a ->
-            val href = a.attr("href").ifBlank { null } ?: return@mapNotNull null
-            val fixed = fixUrl(href)
-            val path = detailPathFromUrl(fixed)
-            if (path.isBlank()) return@mapNotNull null
-
-            val cardTitle = a.selectFirst("p")?.text()
-            val title = parseCardTitle(a.attr("title"), cardTitle, path)
-
-            val poster = a.selectFirst("img")?.let { img ->
-                img.attr("data-src").ifBlank { null }
-                    ?: img.attr("src").ifBlank { null }
-                    ?: img.attr("data-original").ifBlank { null }
+        val items = parsed.data?.subjectList.orEmpty().mapNotNull { s ->
+            val path = s.detailPath ?: return@mapNotNull null
+            val title = s.title ?: return@mapNotNull null
+            val tvType = toTvType(s.subjectType)
+            newSearchResponse(title, "$mainUrl/moviesDetail/$path", tvType) {
+                posterUrl = s.cover?.url
             }
-
-            newMovieSearchResponse(title, "$mainUrl/moviesDetail/$path", TvType.Movie) {
-                this.posterUrl = poster
-            }
-        }.distinctBy { it.url }
+        }
 
         return newHomePageResponse(request.name, items)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        // MovieBox web tidak expose search HTML stabil, jadi pakai kumpulan card homepage lalu filter judul
-        val home = app.get(mainUrl).document
-        val anchors = home
-            .select("a.movie-card[href*=/moviesDetail/]")
-            .ifEmpty { home.select("a[href*=/moviesDetail/]") }
+        // fallback sederhana: cari dari 3 ranking list utama
+        val pools = mainPage.map { (_, id) ->
+            val raw = apiGet("/wefeed-h5api-bff/ranking-list/content?id=$id&page=1&perPage=24")
+            AppUtils.mapper.readValue<ApiEnvelope<RankingData>>(raw).data?.subjectList.orEmpty()
+        }.flatten()
 
-        return anchors.mapNotNull { a ->
-            val href = a.attr("href").ifBlank { null } ?: return@mapNotNull null
-            val fixed = fixUrl(href)
-            val path = detailPathFromUrl(fixed)
-            if (path.isBlank()) return@mapNotNull null
-
-            val cardTitle = a.selectFirst("p")?.text()
-            val title = parseCardTitle(a.attr("title"), cardTitle, path)
-            if (!title.contains(query, ignoreCase = true)) return@mapNotNull null
-
-            val poster = a.selectFirst("img")?.let { img ->
-                img.attr("data-src").ifBlank { null }
-                    ?: img.attr("src").ifBlank { null }
+        return pools.distinctBy { it.detailPath }
+            .filter { (it.title ?: "").contains(query, true) }
+            .mapNotNull { s ->
+                val path = s.detailPath ?: return@mapNotNull null
+                val title = s.title ?: return@mapNotNull null
+                newSearchResponse(title, "$mainUrl/moviesDetail/$path", toTvType(s.subjectType)) {
+                    posterUrl = s.cover?.url
+                }
             }
-
-            newMovieSearchResponse(title, "$mainUrl/moviesDetail/$path", TvType.Movie) {
-                this.posterUrl = poster
-            }
-        }.distinctBy { it.url }
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val detailUrl = if (url.contains("/moviesDetail/")) url else "$mainUrl/moviesDetail/${detailPathFromUrl(url)}"
-        val detailPath = detailPathFromUrl(detailUrl)
+        val detailPath = detailPathFromUrl(url)
+        val raw = apiGet("/wefeed-h5api-bff/detail?detailPath=$detailPath")
+        val parsed = AppUtils.mapper.readValue<ApiEnvelope<DetailData>>(raw)
 
-        val doc = app.get(detailUrl).document
-        val title = doc.selectFirst("meta[property=og:title]")?.attr("content")?.ifBlank { null }
-            ?: doc.selectFirst("title")?.text()?.ifBlank { null }
-            ?: detailPath.substringBeforeLast("-").replace('-', ' ')
+        val subject = parsed.data?.subject ?: throw ErrorLoadingException("Subject not found")
+        val resource = parsed.data?.resource
 
-        val poster = doc.selectFirst("meta[property=og:image]")?.attr("content")?.ifBlank { null }
-        val desc = doc.selectFirst("meta[name=description]")?.attr("content")?.ifBlank { null }
+        val title = subject.title ?: throw ErrorLoadingException("Title not found")
+        val plot = subject.description
+        val poster = subject.cover?.url
+        val tags = subject.genre?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() }.orEmpty()
+        val year = subject.releaseDate?.take(4)?.toIntOrNull()
 
-        val html = doc.outerHtml()
-        val nuxt = extractNuxtData(html).orEmpty()
-        val strings = extractStrings(nuxt)
+        val seasons = resource?.seasons.orEmpty()
+        val isSeriesLike = seasons.isNotEmpty() && (seasons.first().maxEp ?: 0) > 1
 
-        val basePrefix = titlePrefix(detailPath)
-        val slugRegex = Regex("[a-z0-9-]+-[A-Za-z0-9]{8,}")
+        if (isSeriesLike) {
+            val episodes = mutableListOf<Episode>()
+            seasons.forEach { se ->
+                val seasonNo = se.se ?: return@forEach
+                val eps = if (!se.allEp.isNullOrBlank()) {
+                    se.allEp.split(',').mapNotNull { it.trim().toIntOrNull() }
+                } else {
+                    val max = se.maxEp ?: 0
+                    (1..max).toList()
+                }
 
-        val candidateSlugs = strings
-            .asSequence()
-            .flatMap { s -> slugRegex.findAll(s).map { it.value } }
-            .filter { it.startsWith(basePrefix) }
-            .distinct()
-            .toList()
-
-        // Cari slug yang kemungkinan playable (episode/variant)
-        val playableSlugs = candidateSlugs.filter { it != detailPath }
-
-        return if (playableSlugs.isNotEmpty()) {
-            val episodes = playableSlugs.mapIndexed { idx, slug ->
-                newEpisode("$mainUrl/movies/$slug") {
-                    this.name = "Episode ${idx + 1}"
-                    this.episode = idx + 1
+                eps.forEach { ep ->
+                    episodes.add(newEpisode("$mainUrl/moviesDetail/$detailPath?sid=${subject.subjectId}&se=$seasonNo&ep=$ep") {
+                        this.season = seasonNo
+                        this.episode = ep
+                        this.name = "Episode $ep"
+                    })
                 }
             }
 
-            newTvSeriesLoadResponse(title, detailUrl, TvType.TvSeries, episodes) {
-                this.posterUrl = poster
-                this.plot = desc
+            return newTvSeriesLoadResponse(title, url, toTvType(subject.subjectType), episodes) {
+                posterUrl = poster
+                this.plot = plot
+                this.tags = tags
+                this.year = year
             }
-        } else {
-            // fallback single movie
-            newMovieLoadResponse(title, detailUrl, TvType.Movie, "$mainUrl/movies/$detailPath") {
-                this.posterUrl = poster
-                this.plot = desc
-            }
+        }
+
+        val sid = subject.subjectId.orEmpty()
+        return newMovieLoadResponse(title, url, toTvType(subject.subjectType), "$mainUrl/moviesDetail/$detailPath?sid=$sid&se=1&ep=1") {
+            posterUrl = poster
+            this.plot = plot
+            this.tags = tags
+            this.year = year
         }
     }
 
@@ -168,38 +203,39 @@ class MovieBox : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val playUrl = if (data.contains("/movies/")) data else "$mainUrl/movies/${detailPathFromUrl(data)}"
-        val html = app.get(playUrl).text
-        val nuxt = extractNuxtData(html) ?: return false
-        val strings = extractStrings(nuxt)
+        val detailPath = detailPathFromUrl(data)
+        val sid = Regex("[?&]sid=([^&]+)").find(data)?.groupValues?.getOrNull(1)
+        val se = Regex("[?&]se=(\\d+)").find(data)?.groupValues?.getOrNull(1) ?: "1"
+        val ep = Regex("[?&]ep=(\\d+)").find(data)?.groupValues?.getOrNull(1) ?: "1"
 
-        // direct media urls (mp4 / m3u8)
-        val mediaUrls = strings.filter {
-            it.startsWith("http") && (
-                it.contains(".mp4", ignoreCase = true) ||
-                    it.contains(".m3u8", ignoreCase = true) ||
-                    it.contains("macdn.aoneroom.com/media") ||
-                    it.contains("hdfullcdn.cc")
-                )
-        }.distinct()
+        val subjectId = if (!sid.isNullOrBlank()) sid else {
+            val detRaw = apiGet("/wefeed-h5api-bff/detail?detailPath=$detailPath")
+            val det = AppUtils.mapper.readValue<ApiEnvelope<DetailData>>(detRaw)
+            det.data?.subject?.subjectId ?: return false
+        }
 
-        mediaUrls.forEach { raw ->
+        val playRaw = apiGet("/wefeed-h5api-bff/subject/play?subjectId=$subjectId&se=$se&ep=$ep&detailPath=$detailPath")
+        val play = AppUtils.mapper.readValue<ApiEnvelope<PlayData>>(playRaw).data
+
+        val links = (play?.hls.orEmpty() + play?.streams.orEmpty())
+            .mapNotNull { it.url?.takeIf { u -> u.startsWith("http") } to it.resolutions }
+
+        links.forEach { (u, res) ->
             val q = when {
-                raw.contains("1080", true) -> Qualities.P1080.value
-                raw.contains("720", true) -> Qualities.P720.value
-                raw.contains("480", true) -> Qualities.P480.value
-                raw.contains("360", true) -> Qualities.P360.value
+                (res ?: "").contains("1080") || u.contains("1080", true) -> Qualities.P1080.value
+                (res ?: "").contains("720") || u.contains("720", true) -> Qualities.P720.value
+                (res ?: "").contains("480") || u.contains("480", true) -> Qualities.P480.value
+                (res ?: "").contains("360") || u.contains("360", true) -> Qualities.P360.value
                 else -> Qualities.Unknown.value
             }
-
-            callback.invoke(
-                newExtractorLink(name, name, raw) {
-                    this.quality = q
-                    this.referer = "$mainUrl/"
+            callback(
+                newExtractorLink(name, "$name ${res ?: "Auto"}", u) {
+                    quality = q
+                    referer = "$mainUrl/"
                 }
             )
         }
 
-        return mediaUrls.isNotEmpty()
+        return links.isNotEmpty()
     }
 }
