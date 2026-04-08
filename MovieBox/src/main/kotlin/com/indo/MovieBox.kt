@@ -40,63 +40,75 @@ class MovieBox : MainAPI() {
         return detailPath.substringBeforeLast("-")
     }
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(request.data).document
-        val items = document.select("a[href*=/moviesDetail/]")
-            .mapNotNull { a ->
-                val href = a.attr("href").ifBlank { null } ?: return@mapNotNull null
-                val fixed = fixUrl(href)
-                val path = detailPathFromUrl(fixed)
-                if (path.isBlank()) return@mapNotNull null
+    private fun parseCardTitle(rawTitle: String?, cardText: String?, detailPath: String): String {
+        val fromTitleAttr = rawTitle
+            ?.replace(Regex("^go to\\s+", RegexOption.IGNORE_CASE), "")
+            ?.replace(Regex("\\s+detail page$", RegexOption.IGNORE_CASE), "")
+            ?.trim()
+            ?.ifBlank { null }
 
-                val title = a.attr("title").ifBlank {
-                    a.text().trim()
-                }.ifBlank {
-                    path.substringBeforeLast("-").replace('-', ' ')
-                }
+        val fromCard = cardText?.trim()?.ifBlank { null }
 
-                val poster = a.selectFirst("img")?.let { img ->
-                    img.attr("src").ifBlank { null } ?: img.attr("data-src").ifBlank { null }
-                }
-
-                newMovieSearchResponse(title, "$mainUrl/moviesDetail/$path", TvType.Movie) {
-                    this.posterUrl = poster
-                }
-            }
-            .distinctBy { it.url }
-
-        return newHomePageResponse(request.name, items)
+        return fromCard
+            ?: fromTitleAttr
+            ?: detailPath.substringBeforeLast("-").replace('-', ' ')
     }
 
-    override suspend fun search(query: String): List<SearchResponse> {
-        // Fallback search: gunakan pencarian web MovieBox (SSR page)
-        val doc = app.get("$mainUrl/?s=$query").document
-        val fromSearch = doc.select("a[href*=/moviesDetail/]").mapNotNull { a ->
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val document = app.get(request.data).document
+
+        val anchors = document
+            .select("a.movie-card[href*=/moviesDetail/]")
+            .ifEmpty { document.select("a[href*=/moviesDetail/]") }
+
+        val items = anchors.mapNotNull { a ->
             val href = a.attr("href").ifBlank { null } ?: return@mapNotNull null
             val fixed = fixUrl(href)
             val path = detailPathFromUrl(fixed)
             if (path.isBlank()) return@mapNotNull null
-            val title = a.attr("title").ifBlank {
-                a.text().trim()
-            }.ifBlank {
-                path.substringBeforeLast("-").replace('-', ' ')
+
+            val cardTitle = a.selectFirst("p")?.text()
+            val title = parseCardTitle(a.attr("title"), cardTitle, path)
+
+            val poster = a.selectFirst("img")?.let { img ->
+                img.attr("data-src").ifBlank { null }
+                    ?: img.attr("src").ifBlank { null }
+                    ?: img.attr("data-original").ifBlank { null }
             }
-            val poster = a.selectFirst("img")?.attr("src")?.ifBlank { null }
+
             newMovieSearchResponse(title, "$mainUrl/moviesDetail/$path", TvType.Movie) {
                 this.posterUrl = poster
             }
         }.distinctBy { it.url }
 
-        if (fromSearch.isNotEmpty()) return fromSearch
+        return newHomePageResponse(request.name, items)
+    }
 
-        // Jika kosong, fallback dari homepage filter title
+    override suspend fun search(query: String): List<SearchResponse> {
+        // MovieBox web tidak expose search HTML stabil, jadi pakai kumpulan card homepage lalu filter judul
         val home = app.get(mainUrl).document
-        return home.select("a[href*=/moviesDetail/]").mapNotNull { a ->
+        val anchors = home
+            .select("a.movie-card[href*=/moviesDetail/]")
+            .ifEmpty { home.select("a[href*=/moviesDetail/]") }
+
+        return anchors.mapNotNull { a ->
             val href = a.attr("href").ifBlank { null } ?: return@mapNotNull null
-            val path = detailPathFromUrl(href)
-            val title = a.text().trim().ifBlank { path.substringBeforeLast("-").replace('-', ' ') }
+            val fixed = fixUrl(href)
+            val path = detailPathFromUrl(fixed)
+            if (path.isBlank()) return@mapNotNull null
+
+            val cardTitle = a.selectFirst("p")?.text()
+            val title = parseCardTitle(a.attr("title"), cardTitle, path)
             if (!title.contains(query, ignoreCase = true)) return@mapNotNull null
-            newMovieSearchResponse(title, "$mainUrl/moviesDetail/$path", TvType.Movie)
+
+            val poster = a.selectFirst("img")?.let { img ->
+                img.attr("data-src").ifBlank { null }
+                    ?: img.attr("src").ifBlank { null }
+            }
+
+            newMovieSearchResponse(title, "$mainUrl/moviesDetail/$path", TvType.Movie) {
+                this.posterUrl = poster
+            }
         }.distinctBy { it.url }
     }
 
