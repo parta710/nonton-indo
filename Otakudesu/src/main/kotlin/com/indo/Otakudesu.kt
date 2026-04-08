@@ -152,7 +152,10 @@ class Otakudesu : MainAPI() {
 
                     if (forceQualityHost) {
                         loadExtractor(fixedUrl, data, subtitleCallback) { link ->
-                            callback(link.copy(quality = quality))
+                            callback(newExtractorLink(link.source, link.name, link.url) {
+                                this.quality = quality
+                                this.referer = link.referer ?: data
+                            })
                         }
                     } else {
                         loadExtractor(fixedUrl, data, subtitleCallback, callback)
