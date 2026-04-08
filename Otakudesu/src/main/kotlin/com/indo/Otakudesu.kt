@@ -146,7 +146,17 @@ class Otakudesu : MainAPI() {
                         this.referer = data
                     })
                 } else {
-                    loadExtractor(fixedUrl, data, subtitleCallback, callback)
+                    val forceQualityHost =
+                        lowerUrl.contains("pixeldrain.com") ||
+                        lowerUrl.contains("krakenfiles.com")
+
+                    if (forceQualityHost) {
+                        loadExtractor(fixedUrl, data, subtitleCallback) { link ->
+                            callback(link.copy(quality = quality))
+                        }
+                    } else {
+                        loadExtractor(fixedUrl, data, subtitleCallback, callback)
+                    }
                 }
             }
         }
