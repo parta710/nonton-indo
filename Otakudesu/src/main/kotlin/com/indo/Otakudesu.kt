@@ -131,24 +131,22 @@ class Otakudesu : MainAPI() {
                     resolveDesuLink(href) ?: return@forEach
                 } else href
 
-                // Host yang butuh ekstractor khusus (embed player) → loadExtractor
-                // Host file langsung → newExtractorLink dengan quality
-                val isDirectFile = realUrl.contains("pixeldrain.com") ||
-                    realUrl.contains("krakenfiles.com") ||
-                    realUrl.contains("acefile.co") ||
-                    realUrl.contains("gofile.io") ||
-                    realUrl.contains("mega.nz") ||
-                    realUrl.contains(".mp4") ||
-                    realUrl.contains("odfiles") ||
-                    realUrl.contains("otakufiles")
+                val fixedUrl = fixUrl(realUrl)
+                val lowerUrl = fixedUrl.lowercase()
 
-                if (isDirectFile) {
-                    callback(newExtractorLink(serverName, serverName, fixUrl(realUrl)) {
+                // Hanya bypass extractor kalau memang link media langsung.
+                // Pixeldrain/KrakenFiles biasanya butuh extractor (halaman, bukan file stream langsung).
+                val isDirectMedia =
+                    Regex("\\.(mp4|mkv|webm|m3u8)(\\?|$)", RegexOption.IGNORE_CASE).containsMatchIn(fixedUrl) ||
+                    lowerUrl.contains("pixeldrain.com/api/file/")
+
+                if (isDirectMedia) {
+                    callback(newExtractorLink(name, serverName, fixedUrl) {
                         this.quality = quality
                         this.referer = data
                     })
                 } else {
-                    loadExtractor(fixUrl(realUrl), data, subtitleCallback, callback)
+                    loadExtractor(fixedUrl, data, subtitleCallback, callback)
                 }
             }
         }
