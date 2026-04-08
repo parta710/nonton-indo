@@ -153,7 +153,7 @@ class MovieBox : MainAPI() {
             }
         }
 
-        return newMovieLoadResponse(title, url, tvType, "$mainUrl/moviesDetail/$detailPath?sid=$subjectId&se=1&ep=1") {
+        return newMovieLoadResponse(title, url, tvType, "$mainUrl/movies/$detailPath?id=$subjectId&type=/movie/detail&detailSe=&detailEp=&lang=en") {
             this.posterUrl = poster
             this.plot = plot
             this.tags = tags
@@ -168,7 +168,7 @@ class MovieBox : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val detailPath = detailPathFromUrl(data)
-        val sid = Regex("[?&]sid=([^&]+)").find(data)?.groupValues?.getOrNull(1)
+        val sid = Regex("[?&](sid|id)=([^&]+)").find(data)?.groupValues?.getOrNull(2)
         val se = Regex("[?&]se=(\\d+)").find(data)?.groupValues?.getOrNull(1) ?: "1"
         val ep = Regex("[?&]ep=(\\d+)").find(data)?.groupValues?.getOrNull(1) ?: "1"
 
@@ -177,37 +177,80 @@ class MovieBox : MainAPI() {
             val detRoot = tryParseJson<Map<String, Any?>>(detRaw)
             val detData = detRoot?.get("data") as? Map<*, *>
             val subject = detData?.get("subject") as? Map<*, *>
-            subject?.get("subjectId")?.toString() ?: return false
+            subject?.get("subjectId")?.toString().orEmpty()
         }
 
-        val playRaw = apiGet("/wefeed-h5api-bff/subject/play?subjectId=$subjectId&se=$se&ep=$ep&detailPath=$detailPath")
-        val playRoot = tryParseJson<Map<String, Any?>>(playRaw) ?: return false
-        val playData = playRoot["data"] as? Map<*, *> ?: return false
+        var found = false
 
-        val hls = (playData["hls"] as? List<*>)?.mapNotNull { it as? Map<*, *> }.orEmpty()
-        val streams = (playData["streams"] as? List<*>)?.mapNotNull { it as? Map<*, *> }.orEmpty()
-        val all = hls + streams
+        // 1) Try API play first
+        if (subjectId.isNotBlank()) {
+            val playRaw = apiGet("/wefeed-h5api-bff/subject/play?subjectId=$subjectId&se=$se&ep=$ep&detailPath=$detailPath")
+            val playRoot = tryParseJson<Map<String, Any?>>(playRaw)
+            val playData = playRoot?.get("data") as? Map<*, *>
+            val hls = (playData?.get("hls") as? List<*>)?.mapNotNull { it as? Map<*, *> }.orEmpty()
+            val streams = (playData?.get("streams") as? List<*>)?.mapNotNull { it as? Map<*, *> }.orEmpty()
+            val all = hls + streams
 
-        all.forEach { item ->
-            val u = item["url"]?.toString()?.takeIf { it.startsWith("http") } ?: return@forEach
-            val res = item["resolutions"]?.toString()
+            all.forEach { item ->
+                val u = item["url"]?.toString()?.takeIf { it.startsWith("http") } ?: return@forEach
+                val res = item["resolutions"]?.toString()
 
-            val q = when {
-                (res ?: "").contains("1080") || u.contains("1080", true) -> Qualities.P1080.value
-                (res ?: "").contains("720") || u.contains("720", true) -> Qualities.P720.value
-                (res ?: "").contains("480") || u.contains("480", true) -> Qualities.P480.value
-                (res ?: "").contains("360") || u.contains("360", true) -> Qualities.P360.value
-                else -> Qualities.Unknown.value
-            }
+                val q = when {
+                    (res ?: "").contains("1080") || u.contains("1080", true) -> Qualities.P1080.value
+                    (res ?: "").contains("720") || u.contains("720", true) -> Qualities.P720.value
+                    (res ?: "").contains("480") || u.contains("480", true) -> Qualities.P480.value
+                    (res ?: "").contains("360") || u.contains("360", true) -> Qualities.P360.value
+                    else -> Qualities.Unknown.value
+                }
 
-            callback(
-                newExtractorLink(name, "$name ${res ?: "Auto"}", u) {
+                found = true
+                callback(newExtractorLink(name, "$name ${res ?: "Auto"}", u) {
                     this.quality = q
                     this.referer = "$mainUrl/"
-                }
-            )
+                })
+            }
         }
 
-        return all.isNotEmpty()
+        // 2) Fallback: parse /movies page (MovieBox SSR) for all available links
+        if (!found) {
+            val moviesUrl = if (data.contains("/movies/")) data else "$mainUrl/movies/$detailPath?id=$subjectId&type=/movie/detail&detailSe=&detailEp=&lang=en"
+            val html = app.get(moviesUrl, headers = mapOf("User-Agent" to USER_AGENT)).text
+            val nuxt = Regex("""<script[^>]*id=\"__NUXT_DATA__\"[^>]*>([\\s\\S]*?)</script>""")
+                .find(html)
+                ?.groupValues
+                ?.getOrNull(1)
+                .orEmpty()
+
+            val strings = Regex("\"([^\"\\n\\r]{8,})\"").findAll(nuxt)
+                .map { it.groupValues[1] }
+                .toList()
+
+            val links = strings.filter {
+                it.startsWith("http") && (
+                    it.contains(".mp4", true) ||
+                    it.contains(".m3u8", true) ||
+                    it.contains("fzmovies", true) ||
+                    it.contains("macdn.aoneroom.com/media", true)
+                    )
+            }.distinct()
+
+            links.forEach { u ->
+                val q = when {
+                    u.contains("1080", true) -> Qualities.P1080.value
+                    u.contains("720", true) -> Qualities.P720.value
+                    u.contains("480", true) || u.contains("r480p", true) -> Qualities.P480.value
+                    u.contains("360", true) || u.contains("r360p", true) -> Qualities.P360.value
+                    else -> Qualities.Unknown.value
+                }
+
+                found = true
+                callback(newExtractorLink(name, name, u) {
+                    this.quality = q
+                    this.referer = "$mainUrl/"
+                })
+            }
+        }
+
+        return found
     }
 }
