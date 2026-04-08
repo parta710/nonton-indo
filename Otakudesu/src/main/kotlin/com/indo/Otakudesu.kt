@@ -146,19 +146,44 @@ class Otakudesu : MainAPI() {
                         this.referer = data
                     })
                 } else {
-                    val forceQualityHost =
-                        lowerUrl.contains("pixeldrain.com") ||
-                        lowerUrl.contains("krakenfiles.com")
-
-                    if (forceQualityHost) {
-                        loadExtractor(fixedUrl, data, subtitleCallback) { link ->
-                            callback(newExtractorLink(link.source, link.name, link.url) {
-                                this.quality = quality
-                                this.referer = link.referer ?: data
-                            })
+                    when {
+                        lowerUrl.contains("pixeldrain.com") -> {
+                            val pdId = Regex("pixeldrain\\.com/u/(\\w+)")
+                                .find(fixedUrl)
+                                ?.groupValues
+                                ?.getOrNull(1)
+                            if (pdId != null) {
+                                callback(newExtractorLink("PixelDrain", serverName, "https://pixeldrain.com/api/file/$pdId") {
+                                    this.quality = quality
+                                    this.referer = fixedUrl
+                                })
+                            } else {
+                                loadExtractor(fixedUrl, data, subtitleCallback, callback)
+                            }
                         }
-                    } else {
-                        loadExtractor(fixedUrl, data, subtitleCallback, callback)
+
+                        lowerUrl.contains("krakenfiles.com") -> {
+                            try {
+                                val kfDoc = app.get(fixedUrl).document
+                                val streamUrl = kfDoc
+                                    .selectFirst("source[src*=krakencloud], source[type=video/mp4]")
+                                    ?.attr("src")
+                                    ?.ifBlank { null }
+
+                                if (streamUrl != null) {
+                                    callback(newExtractorLink("KrakenFiles", serverName, streamUrl) {
+                                        this.quality = quality
+                                        this.referer = fixedUrl
+                                    })
+                                } else {
+                                    loadExtractor(fixedUrl, data, subtitleCallback, callback)
+                                }
+                            } catch (_: Exception) {
+                                loadExtractor(fixedUrl, data, subtitleCallback, callback)
+                            }
+                        }
+
+                        else -> loadExtractor(fixedUrl, data, subtitleCallback, callback)
                     }
                 }
             }
