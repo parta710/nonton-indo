@@ -14,7 +14,7 @@ class AnimeIndo : MainAPI() {
     override val hasMainPage = true
     override var lang = "id"
     override val hasDownloadSupport = true
-    override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
+    override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA, TvType.Movie)
 
     // Homepage menampilkan episode terbaru
     // Struktur: <a href="/judul-episode-N/"><div class="list-anime">
