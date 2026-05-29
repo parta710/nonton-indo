@@ -29,8 +29,7 @@ jobs:
         with:
           ref: "builds"
           path: "builds"
-          token: ${{ secrets.PAT_TOKEN }}
-
+          token: ${{ secrets.GITHUB_TOKEN }}
       - name: Clean old builds
         run: |
           cd $GITHUB_WORKSPACE/builds
